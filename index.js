@@ -1,60 +1,120 @@
-const express = require('express');
+const { Client, GatewayIntentBits, Events } = require('discord.js');
 
-const app = express();
-app.use(express.json());
+const TOKEN = process.env.DISCORD_TOKEN;
 
-const PORT = process.env.PORT || 3000;
+if (!TOKEN) {
+  console.error('Missing DISCORD_TOKEN environment variable. Set it before starting the bot.');
+  process.exit(1);
+}
+
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+});
+
+const PREFIX = '!';
 
 // In-memory store for giveaways (starter boilerplate — swap for a real DB in production)
 const giveaways = [];
 let nextId = 1;
 
-app.get('/', (req, res) => {
-  res.json({
-    service: 'giveaway-creator',
-    status: 'ok',
-  });
+// Simple command handler
+const commands = {
+  ping: async (message) => {
+    await message.reply('Pong!');
+  },
+
+  giveaway: async (message, args) => {
+    const title = args.join(' ').trim();
+
+    if (!title) {
+      await message.reply('Usage: `!giveaway <title>`');
+      return;
+    }
+
+    const giveaway = {
+      id: nextId++,
+      title,
+      createdAt: new Date().toISOString(),
+      createdBy: message.author.id,
+    };
+
+    giveaways.push(giveaway);
+
+    await message.reply(`🎉 Giveaway #${giveaway.id} created: **${giveaway.title}**`);
+  },
+
+  giveaways: async (message) => {
+    if (giveaways.length === 0) {
+      await message.reply('There are no active giveaways.');
+      return;
+    }
+
+    const list = giveaways
+      .map((g) => `#${g.id} — ${g.title}`)
+      .join('\n');
+
+    await message.reply(`Current giveaways:\n${list}`);
+  },
+};
+
+client.once(Events.ClientReady, (readyClient) => {
+  console.log(`Bot is ready! Logged in as ${readyClient.user.tag}`);
 });
 
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'healthy' });
-});
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    if (message.author.bot) return;
+    if (!message.content.startsWith(PREFIX)) return;
 
-app.get('/giveaways', (req, res) => {
-  res.json(giveaways);
-});
+    const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
+    const commandName = args.shift().toLowerCase();
 
-app.get('/giveaways/:id', (req, res) => {
-  const giveaway = giveaways.find((g) => g.id === Number(req.params.id));
-  if (!giveaway) {
-    return res.status(404).json({ error: 'Giveaway not found' });
+    const command = commands[commandName];
+    if (!command) return;
+
+    await command(message, args);
+  } catch (error) {
+    console.error('Error handling message:', error);
+    try {
+      await message.reply('Something went wrong while processing that command.');
+    } catch (replyError) {
+      console.error('Failed to send error reply:', replyError);
+    }
   }
-  res.json(giveaway);
 });
 
-app.post('/giveaways', (req, res) => {
-  const { title, description, prize } = req.body || {};
+client.on(Events.Error, (error) => {
+  console.error('Discord client error:', error);
+});
 
-  if (!title) {
-    return res.status(400).json({ error: 'title is required' });
+client.on(Events.ShardError, (error) => {
+  console.error('Discord shard error:', error);
+});
+
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+});
+
+async function shutdown(signal) {
+  console.log(`Received ${signal}, shutting down gracefully...`);
+  try {
+    await client.destroy();
+    console.log('Discord client destroyed. Goodbye!');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+    process.exit(1);
   }
+}
 
-  const giveaway = {
-    id: nextId++,
-    title,
-    description: description || '',
-    prize: prize || '',
-    createdAt: new Date().toISOString(),
-  };
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
-  giveaways.push(giveaway);
-  res.status(201).json(giveaway);
-});
-
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not found' });
-});
-
-app.listen(PORT, () => {
-  console.log(`giveaway-creator listening on port ${PORT}`);
+client.login(TOKEN).catch((error) => {
+  console.error('Failed to log in to Discord:', error);
+  process.exit(1);
 });
